@@ -44,8 +44,6 @@ import ghidra.program.model.listing.Variable;
 import ghidra.app.decompiler.component.DecompilerUtils;
 import ghidra.app.decompiler.ClangToken;
 import ghidra.framework.options.Options;
-import ghidra.framework.options.OptionsChangeListener;
-import ghidra.framework.options.ToolOptions;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -71,10 +69,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
     shortDescription = "HTTP server plugin",
     description = "Starts an embedded HTTP server to expose program data. Port configurable via Tool Options."
 )
-public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
+public class GhidraMCPPlugin extends Plugin {
 
     private HttpServer server;
-    private int currentPort = DEFAULT_PORT;
     private static final String OPTION_CATEGORY_NAME = "GhidraMCP HTTP Server";
     private static final String PORT_OPTION_NAME = "Server Port";
     private static final int DEFAULT_PORT = 8888;
@@ -84,17 +81,11 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
         Msg.info(this, "GhidraMCPPlugin loading...");
 
         // Register the configuration option
-        ToolOptions options = tool.getOptions(OPTION_CATEGORY_NAME);
+        Options options = tool.getOptions(OPTION_CATEGORY_NAME);
         options.registerOption(PORT_OPTION_NAME, DEFAULT_PORT,
             null, // No help location for now
             "The network port number the embedded HTTP server will listen on. " +
-            "Server will automatically restart when this option is changed.");
-            
-        // Add options change listener
-        options.addOptionsChangeListener(this);
-        
-        // Set initial port
-        currentPort = options.getInt(PORT_OPTION_NAME, DEFAULT_PORT);
+            "Requires Ghidra restart or plugin reload to take effect after changing.");
 
         try {
             startServer();
@@ -107,11 +98,8 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
 
     private void startServer() throws IOException {
         // Read the configured port
-        ToolOptions options = tool.getOptions(OPTION_CATEGORY_NAME);
+        Options options = tool.getOptions(OPTION_CATEGORY_NAME);
         int port = options.getInt(PORT_OPTION_NAME, DEFAULT_PORT);
-        
-        // Store current port
-        currentPort = port;
 
         // Stop existing server if running (e.g., if plugin is reloaded)
         if (server != null) {
@@ -1525,6 +1513,7 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
      */
     private String escapeString(String input) {
         if (input == null) return "";
+        
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < input.length(); i++) {
             char c = input.charAt(i);
@@ -1789,7 +1778,7 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
     }
 
     /**
-    /**
+     * Get metadata about the current program
      */
     private String getMetadata() {
         Program program = getCurrentProgram();
@@ -1955,34 +1944,7 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
     }
 
     @Override
-    public void optionsChanged(ToolOptions options, String optionName, Object oldValue, Object newValue) {
-        if (!PORT_OPTION_NAME.equals(optionName)) {
-            return; // not our field → ignore
-        }
-
-        int newPort = (Integer) newValue;
-        if (newPort == currentPort) {
-            return; // nothing to do
-        }
-
-        Msg.info(this, "Port changed from " + currentPort + " to " + newPort + ". Restarting server...");
-        
-        // Update current port and restart server
-        currentPort = newPort;
-        try {
-            startServer();
-            tool.setStatusInfo("GhidraMCP server restarted on port " + newPort, true);
-        } catch (IOException e) {
-            Msg.error(this, "Failed to restart HTTP server with new port " + newPort, e);
-        }
-    }
-
-    @Override
     public void dispose() {
-        // Remove options change listener
-        ToolOptions options = tool.getOptions(OPTION_CATEGORY_NAME);
-        options.removeOptionsChangeListener(this);
-        
         if (server != null) {
             Msg.info(this, "Stopping GhidraMCP HTTP server...");
             server.stop(1); // Stop with a small delay (e.g., 1 second) for connections to finish

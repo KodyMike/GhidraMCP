@@ -336,7 +336,7 @@ def list_function_variables(function_name: str) -> str:
     return "\n".join(safe_get("list_function_variables", {"name": function_name}))
 
 @mcp.tool()
-def read_memory_bytes(address: str, length: str) -> str:
+def read_memory_bytes(address: str, length: any) -> str:
     """
     Read memory bytes from a specific address and display as hex dump.
     
