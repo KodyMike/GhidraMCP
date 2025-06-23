@@ -98,6 +98,27 @@ Another MCP client that supports multiple models on the backend is [5ire](https:
 2. Name: GhidraMCP
 3. Command: `python /ABSOLUTE_PATH_TO/bridge_mcp_ghidra.py`
 
+
+## Example 4: VS Code Guidance
+
+To configure MCP integration in VS Code, add the following to your `settings.json` (adjust the path as needed):
+
+```json
+"mcp": {
+    "servers": {
+        "Ghidra MCP": {
+            "command": "/usr/bin/python3",
+            "args": [
+                "/<PATH>bridge_mcp_ghidra.py"
+            ]
+        }
+    }
+}
+```
+
+- Replace the path in `args` with the location of your `bridge_mcp_ghidra.py` script if different.
+- This allows VS Code extensions or tasks to launch the MCP bridge server directly for integration with Ghidra.
+
 # Building from Source
 1. Copy the following files from your Ghidra directory to this project's `lib/` directory:
 - `Ghidra/Features/Base/lib/Base.jar`
@@ -118,34 +139,7 @@ The generated zip file includes the built Ghidra plugin and its resources. These
 - extensions.properties
 - Module.manifest
 
-# VS Code Guidance
 
-For the best experience developing and using GhidraMCP with VS Code:
-
-## Recommended Extensions
-- Java Extension Pack (for Java development)
-- Maven for Java
-- GitLens (for git integration)
-- Markdown All in One (for editing this README)
-
-## Settings for MCP Integration
-To configure MCP integration in VS Code, add the following to your `settings.json` (adjust the path as needed):
-
-```json
-"mcp": {
-    "servers": {
-        "Ghidra MCP": {
-            "command": "/usr/bin/python3",
-            "args": [
-                "/home/kali/Documents/Ghidra_MCP_Project/bridge_mcp_ghidra.py"
-            ]
-        }
-    }
-}
-```
-
-- Replace the path in `args` with the location of your `bridge_mcp_ghidra.py` script if different.
-- This allows VS Code extensions or tasks to launch the MCP bridge server directly for integration with Ghidra.
 
 ## Workflow Tips
 - Use the built-in terminal for running Maven commands:
