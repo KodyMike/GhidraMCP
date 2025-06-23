@@ -109,7 +109,7 @@ To configure MCP integration in VS Code, add the following to your `settings.jso
         "Ghidra MCP": {
             "command": "/usr/bin/python3",
             "args": [
-                "/<PATH>bridge_mcp_ghidra.py"
+                "/<PATH>/bridge_mcp_ghidra.py"
             ]
         }
     }
