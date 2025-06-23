@@ -63,6 +63,8 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import ghidra.program.model.mem.Memory;
+
 
 @PluginInfo(
     status = PluginStatus.RELEASED,
@@ -420,52 +422,103 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
             }
             sendResponse(exchange, listFunctionVariables(functionName));
         });
-
+        /* ─────────── READ 1-1024 bytes  ─────────── */
         server.createContext("/read_memory_bytes", exchange -> {
-            String address = null;
-            String lengthStr = null;
-            if ("POST".equals(exchange.getRequestMethod())) {
-                try {
-                    InputStream is = exchange.getRequestBody();
-                    String body = new String(is.readAllBytes());
-                    if (body.contains("address")) {
-                        int start = body.indexOf("\"address\"") + "\"address\"".length();
-                        start = body.indexOf("\"", start) + 1;
-                        int end = body.indexOf("\"", start);
-                        if (end > start) {
-                            address = body.substring(start, end);
-                        }
-                    }
-                    if (body.contains("length")) {
-                        int start = body.indexOf("\"length\"") + "\"length\"".length();
-                        start = body.indexOf(":", start) + 1;
-                        start = body.indexOf("\"", start) + 1;
-                        if (start == 0) {
-                            // Handle numeric value without quotes
-                            start = body.indexOf(":", body.indexOf("\"length\"")) + 1;
-                            int end = body.indexOf(",", start);
-                            if (end == -1) end = body.indexOf("}", start);
-                            if (end > start) {
-                                lengthStr = body.substring(start, end).trim();
-                            }
-                        } else {
-                            int end = body.indexOf("\"", start);
-                            if (end > start) {
-                                lengthStr = body.substring(start, end);
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    // Fall back to query params
+            try {
+                String verb = exchange.getRequestMethod().toUpperCase();
+                if (!verb.equals("GET") && !verb.equals("POST")) {
+                    sendResponse(exchange, "Method Not Allowed", 405);
+                    return;
                 }
+
+                /* pull params */
+                String address = null;
+                String lengthS = null;
+
+                if (verb.equals("GET")) {
+                    Map<String,String> q = parseQueryParams(exchange);
+                    address = q.get("address");
+                    lengthS = q.getOrDefault("length", "32");
+                } else {                      /* JSON or form POST */
+                    String ctype = Optional.ofNullable(
+                            exchange.getRequestHeaders().getFirst("Content-Type"))
+                            .orElse("");
+                    String body = new String(exchange.getRequestBody().readAllBytes(),
+                                            StandardCharsets.UTF_8);
+                    if (ctype.contains("application/json")) {
+                        address = jsonField(body, "address");
+                        lengthS = Optional.ofNullable(jsonField(body, "length"))
+                                        .orElse("32");
+                    } else {
+                        Map<String,String> p = parsePostParams(exchange);
+                        address = p.get("address");
+                        lengthS = p.getOrDefault("length", "32");
+                    }
+                }
+
+                /* validate */
+                if (address == null || address.isBlank()) {
+                    sendResponse(exchange, "Missing 'address'", 400);  return;
+                }
+                int length;
+                try { length = Integer.parseInt(lengthS); }
+                catch (NumberFormatException nfe) {
+                    sendResponse(exchange, "Invalid 'length'", 400);   return;
+                }
+                if (length < 1 || length > 1024) {
+                    sendResponse(exchange, "'length' must be 1-1024", 400); return;
+                }
+
+                /* delegate to helper already in plugin */
+                String dump = readMemoryBytes(address, Integer.toString(length));
+                sendResponse(exchange, dump);                     // 200
             }
-            if (address == null || lengthStr == null) {
-                Map<String, String> qparams = parseQueryParams(exchange);
-                if (address == null) address = qparams.get("address");
-                if (lengthStr == null) lengthStr = qparams.get("length");
+            catch (Exception e) {
+                sendResponse(exchange, "Internal error: "+e.getMessage(), 500);
             }
-            sendResponse(exchange, readMemoryBytes(address, lengthStr));
         });
+
+        /* ------------------------------------------------------------------ */
+        /*  WRITE-MEMORY handler – safe: only read the body ONCE              */
+        /* ------------------------------------------------------------------ */
+        server.createContext("/write_memory_bytes", exchange -> {
+
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendResponse(exchange, "Method Not Allowed", 405);
+                return;
+            }
+
+            /* read the body ONCE */
+            String body = new String(exchange.getRequestBody().readAllBytes(),
+                                    StandardCharsets.UTF_8);
+
+            String address = null;
+            String bytesStr = null;
+
+            /* decide how to parse it */
+            String ctype = exchange.getRequestHeaders()
+                                .getFirst("Content-Type");
+            if (ctype != null && ctype.contains("application/json")) {
+                // very small JSON helper
+                address  = jsonField(body, "address");
+                bytesStr = jsonField(body, "bytes");
+            }
+            else {
+                // treat as application/x-www-form-urlencoded
+                Map<String,String> params = urlDecodeForm(body);
+                address  = params.get("address");
+                bytesStr = params.get("bytes");
+            }
+
+            if (address == null || bytesStr == null) {
+                sendResponse(exchange, "Missing 'address' or 'bytes'", 400);
+                return;
+            }
+
+            sendResponse(exchange, writeMemoryBytes(address, bytesStr));
+        });
+
+
 
         // MCP SSE endpoint for mcp-proxy
         server.createContext("/sse", exchange -> {
@@ -1525,6 +1578,7 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
      */
     private String escapeString(String input) {
         if (input == null) return "";
+        
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < input.length(); i++) {
             char c = input.charAt(i);
@@ -1914,6 +1968,56 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
             return "Error reading memory: " + e.getMessage();
         }
     }
+    /**
+     * Patch program memory at <address> with a hex string.
+     * Accepts either "90 90 90" or "909090".
+     */
+    private String writeMemoryBytes(String addressStr, String bytesStr) {
+        Program program = getCurrentProgram();
+        if (program == null)
+            return "No program loaded";
+
+        /* convert hex string → byte[] */
+        String clean = bytesStr.replaceAll("\\s+", "");
+        if (clean.length() % 2 != 0)
+            return "Hex string length must be even";
+
+        if (clean.length() / 2 == 0 || clean.length() / 2 > 1024)
+            return "Byte count must be 1-1024";
+
+        byte[] bytes = new byte[clean.length() / 2];
+        try {
+            for (int i = 0; i < bytes.length; i++)
+                bytes[i] = (byte) Integer.parseInt(clean.substring(i*2, i*2+2), 16);
+        } catch (NumberFormatException nfe) {
+            return "Non-hex character in byte string";
+        }
+
+        try {
+            Address addr = program.getAddressFactory().getAddress(addressStr);
+            if (addr == null) return "Bad address";
+
+            Memory mem = program.getMemory();
+            Address end = addr.add(bytes.length-1);
+            if (!mem.contains(addr) || !mem.contains(end))
+                return "Memory range out of bounds / unmapped";
+
+            int tx = program.startTransaction("write_memory_bytes");
+            boolean ok = false;
+            try {
+                program.getListing().clearCodeUnits(addr, end, false);
+                mem.setBytes(addr, bytes);
+                ok = true;
+            } finally {
+                program.endTransaction(tx, ok);
+            }
+            return "Bytes written OK ("+bytes.length+" bytes)";
+        }
+        catch (Exception e) {
+            return "Write failed: "+e.getMessage();
+        }
+    }
+
 
     public Program getCurrentProgram() {
         ProgramManager pm = tool.getService(ProgramManager.class);
@@ -1928,6 +2032,46 @@ public class GhidraMCPPlugin extends Plugin implements OptionsChangeListener {
             os.write(bytes);
         }
     }
+    /** Same as above, but lets the caller pick the HTTP status code. */
+    private void sendResponse(HttpExchange exchange, String response, int statusCode) throws IOException {
+        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(statusCode, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+    /** Grab "field":"value" or "field":123 from a small JSON snippet. */
+    private static String jsonField(String json, String key) {
+        String pat = "\"" + key + "\"\\s*:\\s*";
+        int i = json.indexOf(pat);
+        if (i < 0) return null;
+        i += pat.length();
+        char c = json.charAt(i);
+        if (c == '"') {
+            int end = json.indexOf('"', i + 1);
+            return end > i ? json.substring(i + 1, end) : null;
+        }
+        int end = i;
+        while (end < json.length() && Character.isDigit(json.charAt(end))) end++;
+        return json.substring(i, end);
+    }
+
+    /** Decode a=1&b=2 into a Map without re-reading the stream */
+    private static Map<String,String> urlDecodeForm(String body) {
+        Map<String,String> map = new HashMap<>();
+        for (String pair : body.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq < 0) continue;
+            String k = URLDecoder.decode(pair.substring(0, eq),  StandardCharsets.UTF_8);
+            String v = URLDecoder.decode(pair.substring(eq+1), StandardCharsets.UTF_8);
+            map.put(k, v);
+        }
+        return map;
+    }
+
+
+
 
     private void handleSSERequest(HttpExchange exchange) throws IOException {
         // Set SSE headers

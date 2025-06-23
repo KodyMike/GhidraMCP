@@ -335,19 +335,67 @@ def list_function_variables(function_name: str) -> str:
     """
     return "\n".join(safe_get("list_function_variables", {"name": function_name}))
 
+# ---------------------------------------------------------------------------
+#  Raw memory helpers – READ / WRITE
+#  paste this with the other @mcp.tool() definitions
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
-def read_memory_bytes(address: str, length: any) -> str:
+def read_memory_bytes(address: str, length: int = 32) -> str:
     """
-    Read memory bytes from a specific address and display as hex dump.
-    
-    Args:
-        address: Memory address to read from (e.g., "0x401000")
-        length: Number of bytes to read (1-1024)
-        
-    Returns:
-        Hex dump of memory contents at the specified address
+    Read raw bytes starting at <address>.
+
+    Args
+    ----
+    address : e.g. "0x401000" or "00401000"
+    length  : 1-1024 (default 32)
+
+    Returns
+    -------
+    Hex-dump string exactly as returned by the Ghidra plug-in, or an error.
     """
-    return "\n".join(safe_get("read_memory_bytes", {"address": address, "length": length}))
+    if not (1 <= length <= 1024):
+        return "Length must be 1-1024"
+    if not address:
+        return "Error: 'address' is required"
+
+    # GET endpoint → query-string params
+    return "\n".join(
+        safe_get(
+            "read_memory_bytes",
+            {"address": address, "length": str(length)}
+        )
+    )
+
+
+@mcp.tool()
+def write_memory_bytes(address: str, bytes_hex: str) -> str:
+    """
+    Patch bytes at an absolute address.
+
+    Args
+    ----
+    address   : starting address, e.g. "0x40107e"
+    bytes_hex : hex string – either
+                • space-separated:  "90 90 90"
+                • continuous:       "909090"
+
+    Returns
+    -------
+    The HTTP reply from the plug-in ("Bytes written OK …" or error text).
+    """
+    if not address:
+        return "Error: 'address' is required"
+    if not bytes_hex.strip():
+        return "Error: 'bytes_hex' cannot be empty"
+
+    # POST-only endpoint
+    return safe_post(
+        "write_memory_bytes",
+        {"address": address, "bytes": bytes_hex}
+    )
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
